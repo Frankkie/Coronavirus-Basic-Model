@@ -44,7 +44,7 @@ recovery_rate = 1 / days_of_infectivity
 transmission_rate = R0 * recovery_rate
 
 
-def sir_method(b=transmission_rate, k=recovery_rate, duration=30):
+def sir_method(b=transmission_rate, k=recovery_rate, duration=90):
 
     for j in range(duration):
         # Calculating the date i + 1 days after today
@@ -54,7 +54,7 @@ def sir_method(b=transmission_rate, k=recovery_rate, duration=30):
         # Wuhan shutting down
         if j > 5:
             b -= 0.007
-            if b < 0:
+            if b < 0.01:
                 b = 0.01
 
         S = S_list[-1]
@@ -72,6 +72,7 @@ def sir_method(b=transmission_rate, k=recovery_rate, duration=30):
         rnew = int((dr_dt) * N)
         snew = int((ds_dt) * N)
         inew = int((di_dt) * N)
+        print(I)
 
         need_hospital = I * hosp_rate
         out_of_hospital = need_hospital - capacity
@@ -83,7 +84,6 @@ def sir_method(b=transmission_rate, k=recovery_rate, duration=30):
                        * death_rate_over_capacity)
                        + (in_hospital / need_hospital
                           * death_rate_under_capacity))
-        print(out_of_hospital / need_hospital, death_rate)
         dnew = int(death_rate * rnew)
 
         R_list.append(R + rnew)
