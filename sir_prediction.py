@@ -4,41 +4,65 @@
 
 # Imports
 import datetime
-import time
-import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 
 import worldometer_scrapping
 
-
-R0 = 2.48  # Basic Reproductive Rate
-days_of_infectivity = 11
+# Global variables
+R0 = 2.45  # Basic Reproductive Rate, number of transmissions/infected person in a 100% susceptible population.
+days_of_infectivity = 10  # period during which the infected remain infectious
 recovery_rate = 1 / days_of_infectivity
-transmission_rate = R0 * recovery_rate
+transmission_rate = R0 * recovery_rate  # Number of transmissions per infected person per day
 
 
 def init_data(scenario="world"):
+    """ This function initializes the data the model needs depending on the scenario.
+        Arguments:
+            -scenario (keyword str): the scope that the model considers. Besides single countries, there is also
+                                    "world", and "without China".
+        Output:
+            -data (dict): the data corresponding to the scenario. The structure of the dictionary is as follows:
+            {"N": n, "T start": timestamp_start, "Total list": total_list, "Deaths list": deaths_list,
+            "R list": R_list, "I list": I_list, "S list": S_list, "New cases list": new_cases_list,
+            "Date list": date_list, "Death rate": death_rate}
+            where:
+                ~ N is the population of the scenario
+                ~ T start is the timestamp of the starting date
+                ~ Total list, the list that contains total confirmed cases day by day.
+                ~ Deaths list, the list of total deaths day by day.
+                ~ R list, contains the total non-active (removed/recovered) cases day by day.
+                ~ I list, contains the total active cases (infected/infectious) day by day.
+                ~ S list, contains the susceptible population numbers (not infected, not removed).
+                ~ New cases list, contains the new infectious cases on each day.
+                ~ Date list: the timestamps of the dates in the simulation.
+                ~ Death rate: the percentage of new removed cases that are deaths, day by day.
+                """
+
     # 22nd of January is the starting date
     timestamp_start = 1579651200
+
     if scenario == "without China":
+        # If the scenario is the world, excluding mainland China, first retrieve world data
+        # Later subtract the numbers from China.
         data = worldometer_scrapping.mine_data(scope="world")
     else:
         data = worldometer_scrapping.mine_data(scope=scenario)
+
     # Population of simulation
-    n = data["demographics"]["population"]  # Here, it is the population of the entire planet
+    n = data["demographics"]["population"]
 
-    total_list = data["cases"]
-    deaths_list = data["deaths"]
-    R_list = data["recovered"]
-    I_list = data["active"]
-    S_list = []
+    total_list = data["cases"]  # The list that contains total confirmed cases day by day.
+    deaths_list = data["deaths"]  # The list of total deaths day by day.
+    R_list = data["recovered"]  # Contains the total non-active (removed/recovered) cases day by day.
+    I_list = data["active"]  # Contains the total active cases (infected/infectious) day by day.
+    S_list = []  # Contains the susceptible population numbers (not infected, not removed).
     for i, val in enumerate(total_list):
-        S_list.append(n - val)
+        S_list.append(n - val)  # Total pop minus total confirmed cases
 
-    new_cases_list = []
-    date_list = []
-    death_rate = []
+    new_cases_list = []  # Contains the new infectious cases on each day.
+    date_list = []  # The timestamps of the dates in the simulation.
+    death_rate = []  # The percentage of new removed cases that are deaths, day by day.
     for i, val in enumerate(total_list):
         if i == 0:
             new_cases_list.append(val)
@@ -49,6 +73,7 @@ def init_data(scenario="world"):
         death_rate.append(rate)
 
     if scenario == "without China":
+        # Subtract Chinese data off the world data.
         data_ = worldometer_scrapping.mine_data(scope="China")
         n -= data_["demographics"]["population"]
         for i, val in enumerate(total_list):
@@ -80,97 +105,65 @@ def init_data(scenario="world"):
     return data
 
 
-def weigh_by_death_rate(data):
-    actual_i_list = []
-    actual_death_rate = 0.034
-    previously_recovered = 0
-    for i, val in enumerate(data["I list"]):
-        if i > 46:
-            actual_death_rate += 0.03 / 25
+def sir_method(data, b=transmission_rate, k=recovery_rate, offset=0, run=90):
+    """ This function implements the SIR model of infectious disease.
+        S stands for Susceptible (the percentage of the population that can potentially get infected). With the novel
+        coronavirus this percentage is 100%.
+        R stands for Removed/Recovered (the cases that have recovered or have died and are no longer susceptible)
+        I stands for Infected/Infectious (the number of people that carry the disease at any point in time, and can
+        transmit it to others.
+        Arguments:
+            -data (dict): the data provided by the init_data function.
+            -b (keyword, float): the rate of new infections per infectious person per day.
+            -k (keyword, float): the percentage of infected people recovering/dying per day.
+            -offset (keyword, int): Amount of days the model trims from the end of the data.
+            -run (keyword, int): Amount of days after the offset date that the model runs for.
+    """
 
-        ratio = data["Death rate"][i] / actual_death_rate
-        if ratio < 1.01:
-            ratio = 1.01
-        actual_recovered = data["R list"][i] * ratio
-        dr_dt_actual = actual_recovered - previously_recovered
-        actual_i_list.append(dr_dt_actual / recovery_rate)
-        previously_recovered = actual_recovered
+    N = data["N"]  # Population of scenario
+    # "Extracting" the lists from the data dictionary
+    date_list = data["Date list"][:-offset]  # Dates as timestamps
+    S_list = data["S list"][:-offset]  # Susceptible people
+    R_list = data["R list"][:-offset]  # Removed cases
+    I_list = data["I list"][:-offset]  # Infectious cases
+    total_list = data["Total list"][:-offset]  # Total reported cases
+    new_cases_list = data["New cases list"][:-offset]  # New cases every day
+    deaths_list = data["Deaths list"][:-offset]
+    death_rate = data["Death rate"][:-offset]  # Death rate defined as deaths in a day / removed in a day
 
-    data["Actual I list"] = actual_i_list
-    return data
-
-
-def calculate_recovery_rate(data):
-    recov_rate_list = []
-    prev = 0
-    for j, val in enumerate(data["R list"]):
-        dr_dt = val - prev
-        k = dr_dt / (data["I list"][j] + 1)
-        recov_rate_list.append(k)
-        prev = val
-    data["Recovery rate list"] = recov_rate_list
-    return data
-
-
-def calculate_r_0(data):
-    N = data["N"]
-
-    s_list = data["S list"]
-    i_list = data["I list"]
-
-    c_list = [2.5]
-    for j, val in enumerate(i_list):
-        if j > 0:
-            di_ds = (val - i_list[j-1]) / (s_list[j] - s_list[j - 1])
-            c = 1 / (di_ds + 1)
-            c = c * N / s_list[j]
-            c_list.append(c)
-    return c_list
-
-
-def sir_method(data, b=transmission_rate, k=recovery_rate, start=0, duration=90):
-
-    date_list = data["Date list"][:-start]
-    S_list = data["S list"][:-start]
-    R_list = data["R list"][:-start]
-    I_list = data["I list"][:-start]
-    N = data["N"]
-    total_list = data["Total list"][:-start]
-    new_cases_list = data["New cases list"][:-start]
-    deaths_list = data["Deaths list"][:-start]
-    death_rate = data["Death rate"][:-start]
-
-    print(total_list)
-
-    for j in range(duration):
-        # Calculating the date i + 1 days after today
+    for j in range(run):
+        # Calculating the next day timestamp
         date = date_list[-1] + 24 * 3600
         date_list.append(date)
 
+        # Last day's SIR values
         S = S_list[-1]
         R = R_list[-1]
         I = I_list[-1]
 
-        s = S_list[-1]/N
-        r = R_list[-1]/N
-        i = I_list[-1]/N
-        i_r = 0
-        for day in range(-2, 8, 1):
-            i_r += 0.1 * (new_cases_list[-days_of_infectivity + day])/N
+        # SIR values as a percentage of the initial population
+        s = S/N
+        r = R/N
+        i = I/N
 
-        ds_dt = -b*s*i
-        dr_dt = i_r
-        di_dt = -(ds_dt + dr_dt)
+        # The SIR differential equations
+        ds_dt = -b*s*i  # Change in susceptible population in a day, as a percentage of initial population
+        dr_dt = k*i  # Change in removed cases, as a %
+        di_dt = -(ds_dt + dr_dt)  # Change in infected people, as a %
 
+        # Turning percentages into total numbers
         rnew = int((dr_dt) * N)
         snew = int((ds_dt) * N)
         inew = int((di_dt) * N)
 
+        # Calculating next day's numbers
         R_list.append(R + rnew)
         S_list.append(S + snew)
         I_list.append(I + inew)
-        total_list.append(total_list[-1] - snew)
+
+        total_list.append(total_list[-1] - snew)  # New cases are equal to -snew
         new_cases_list.append(-snew)
+        # New deaths are equal to rnew times the death rate
         deaths_list.append(deaths_list[-1] + int(death_rate[-1] * rnew))
         death_rate.append(death_rate[-1])
 
@@ -179,6 +172,7 @@ def sir_method(data, b=transmission_rate, k=recovery_rate, start=0, duration=90)
               + str(format(total_list[-1], ',d')) + " total cases and "
               + str(format(deaths_list[-1], ',d')) + " deaths.")
 
+    # Updating the data dictionary
     data["Total list"] = total_list
     data["Deaths list"] = deaths_list
     data["R list"] = R_list
@@ -190,24 +184,24 @@ def sir_method(data, b=transmission_rate, k=recovery_rate, start=0, duration=90)
     return data
 
 
-def plotting(data, selection):
-    """ This function plots the number of new daily cases, total cases,
-        and total deaths against time elapsed in the simulation, using
-        matplotlib."""
+def plotting(data, selection, scale="log"):
+    """ This function plots the lists selected from data.
+        Arguments:
+            -data (dict): The dictionary containing the data from the model.
+            -selection (list of str): The list contains the dict keys of the lists that the user wants to plot.
+            -scale (keyword, str): Should be either 'log' or 'linear', defines the scale of the y axis."""
 
     dates = data["Date list"]
-
-    y_axis = []
+    y_axis = []  # The data points to be plotted
     for sel in selection:
         y_axis.append(np.array(data[sel]))
-
+    # Turn Unix timestamps into datetime objects
     for i, date in enumerate(dates):
         dates[i] = datetime.date.fromtimestamp(date)
 
     t = np.array(dates)
-
     fig, ax = plt.subplots()
-    plt.yscale("linear")
+    plt.yscale(scale)
     for pl in y_axis:
         ax.plot(t, pl)
 
@@ -215,15 +209,18 @@ def plotting(data, selection):
            title='Flatten the curve, folks')
     ax.grid()
 
-    # fig.savefig("test.png")
+    name = ".\\results\\"
+    for sel in selection:
+        name += (sel + ", ")
+    name = name + str(dates[-1]) + ".png"
+    fig.savefig(name)
     plt.show()
 
 
-Data = init_data(scenario="South Korea")
-print(len(Data["Total list"]))
-Data = sir_method(Data, start=50, duration=50)
-Data = calculate_recovery_rate(Data)
+if __name__ == '__main__':
 
-plotting(Data, ["Total list"])
+    Data = init_data(scenario="without China")
+    Data = sir_method(Data, offset=25, run=25)
+    plotting(Data, ["Total list", "Deaths list", "I list"], scale='linear')
 
 
